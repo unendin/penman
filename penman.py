@@ -449,6 +449,8 @@ class PENMANCodec(object):
         candidates in the dispreferred orientation (which likely means
         the graph is disconnected).
         """
+        verbose = False
+
         if top is None:
             top = g.top
         remaining = set(g.triples())
@@ -456,9 +458,13 @@ class PENMANCodec(object):
         store = defaultdict(lambda: ([], []))  # (preferred, dispreferred)
         for t in g.triples():
             if t.inverted:
+                if verbose:
+                    print(f'storing inverted: {t}')
                 store[t.target][0].append(t)
                 store[t.source][1].append(Triple(*t, inverted=False))
             else:
+                if verbose:
+                    print(f'storing: {t}')
                 store[t.source][0].append(t)
                 store[t.target][1].append(Triple(*t, inverted=True))
 
@@ -477,6 +483,8 @@ class PENMANCodec(object):
         def _explore_preferred(src):
             ts = store.get(src, ([], []))[0]
             for t in ts:
+                if verbose:
+                    print(f'exploring: {t}')
                 if t in remaining:
                     tgt = _update(t)
                     if tgt is not None:
@@ -487,6 +495,8 @@ class PENMANCodec(object):
 
         while remaining:
             flip_candidates = [store.get(v, ([],[]))[1] for v in topolist]
+            if verbose:
+                print(f"flip_candidates: {flip_candidates}")
             for fc in flip_candidates:
                 fc[:] = [c for c in fc if c in remaining]  # clear superfluous
             if not any(len(fc) > 0 for fc in flip_candidates):
@@ -542,6 +552,54 @@ class PENMANCodec(object):
             map('{0[1]}({0[0]}, {0[2]})'.format, top_triple + g.triples())
         )
 
+
+class AMRCodecLite(PENMANCodec):
+    """
+    AMR Codec without specialized NODE_ENTER_RE that breaks with triples = True
+    """
+    TYPE_REL = 'instance'
+    TOP_VAR = None
+    TOP_REL = 'top'
+    # vars: [a-z]+\d* ; first relation must be node type
+    # NODE_ENTER_RE = re.compile(r'\s*(\()\s*(?=[a-z]+\d*\s*\/)')
+    NODETYPE_RE = PENMANCodec.ATOM_RE
+    VAR_RE = re.compile(r'([a-z]+\d*)')
+    # only non-anonymous relations
+    RELATION_RE = re.compile(r'(:[^\s(),]+)\s*')
+
+    _inversions = {
+        TYPE_REL: None,  # don't allow inverted types
+        'domain': 'mod',
+        'consist-of': 'consist-of-of',
+        'prep-on-behalf-of': 'prep-on-behalf-of-of',
+        'prep-out-of': 'prep-out-of-of',
+    }
+    _deinversions = {
+        'mod': 'domain',
+    }
+
+    def is_relation_inverted(self, relation):
+        """
+        Return True if *relation* is inverted.
+        """
+        return (
+            relation in self._deinversions or
+            (relation.endswith('-of') and relation not in self._inversions)
+        )
+
+    def invert_relation(self, relation):
+        """
+        Invert or deinvert *relation*.
+        """
+        if self.is_relation_inverted(relation):
+            rel = self._deinversions.get(relation, relation[:-3])
+        else:
+            rel = self._inversions.get(relation, relation + '-of')
+        if rel is None:
+             raise PenmanError(
+                'Cannot (de)invert {}; not allowed'.format(relation)
+            )
+        return rel
 
 class AMRCodec(PENMANCodec):
     """
