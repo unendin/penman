@@ -78,6 +78,15 @@ __version_info__ = [
 ]
 
 
+relation_order = {}
+def avg_original_order(triples):
+    """
+    Return a list of triples in the original order
+    """
+    rel_orders.append([(t.relation, t.inverted) for t in triples if t.relation != 'instance'])
+    return triples
+
+
 def original_order(triples):
     """
     Return a list of triples in the original order.
