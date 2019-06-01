@@ -64,7 +64,7 @@ Options:
 #  * out_first_order(triples)
 #  * alphanum_order(triples)
 
-import re
+import regex as re
 from collections import namedtuple, defaultdict
 try:
     basestring
@@ -126,6 +126,8 @@ class PENMANCodec(object):
     TOP_VAR = None
     TOP_REL = 'top'
     NODE_ENTER_RE = re.compile(r'\s*(\()\s*')
+    NODE_ENTER_POS_RE = re.compile(r'\(')
+    NODE_ENTER_SYM = '('
     NODE_EXIT_RE = re.compile(r'\s*(\))\s*')
     RELATION_RE = re.compile(r'(:[^\s(),]*)\s*')
     INT_RE = re.compile(r'[+-]?\d+')
@@ -153,6 +155,7 @@ class PENMANCodec(object):
         """
         self.indent = indent
         self.relation_sort = relation_sort
+        self.var_idx=0
 
     def decode(self, s, triples=False):
         """
@@ -178,6 +181,7 @@ class PENMANCodec(object):
             if triples:
                 span, data = self._decode_triple_conjunction(s)
             else:
+                self.var_idx = 0
                 span, data = self._decode_penman_node(s)
         except IndexError:
             raise DecodeError(
@@ -347,13 +351,14 @@ class PENMANCodec(object):
             m = _regex(self.ATOM_RE, s, pos, "a relation/predicate")
             if start is None:
                 start = m.start(1)
-            pos, rel = m.end(0), m.group(1)
+            pos, rel = m.end(0), m[1]
 
-            m = _regex(self.NODE_ENTER_RE, s, pos, '"("')
+            m = _regex(self.NODE_ENTER_RE, s, pos, 'enter node')
             pos = m.end(0)
             
             m = _regex(self.VAR_RE, s, pos, "a variable (node identifier)")
-            pos, var = m.end(0), m.group(1).strip()
+            pos, var = m.end(0), m[1].strip()
+
 
             m = _regex(self.COMMA_RE, s, pos, '","')
             pos = m.end(0)
@@ -365,7 +370,7 @@ class PENMANCodec(object):
                     m = _regex(self.STRING_RE, s, pos, 'a quoted string')
                 else:
                     m = _regex(self.ATOM_RE, s, pos, 'a float/int/symbol')
-            pos, tgt = m.end(0), m.group(1)
+            pos, tgt = m.end(0), m[1]
             
             if var == self.TOP_VAR and rel == self.TOP_REL:
                 top = tgt
@@ -387,13 +392,18 @@ class PENMANCodec(object):
 
     def _decode_penman_node(self, s, pos=0):
         nodes, edges = [], []
+        var_is_current = False
 
         strlen = len(s)
-        m = _regex(self.NODE_ENTER_RE, s, pos, '"("')
+        m = _regex(self.NODE_ENTER_RE, s, pos, 'node enter')
         start, pos = m.start(1), m.end(0)
 
-        m = _regex(self.VAR_RE, s, pos, "a variable (node identifier)")
-        pos, var = m.end(0), m.group(1).strip()
+        m = _regex(self.VAR_RE, s, pos, 'variable')
+        pos, var = m.end(0), m[1].strip()
+        if not var:
+            var = f"v{self.var_idx}"
+            self.var_idx += 1
+            var_is_current = True
 
         nodetype = None
         while pos < strlen and s[pos] != ')':
@@ -401,16 +411,21 @@ class PENMANCodec(object):
             # node type
             if s[pos] == '/':
                 pos = self.SPACING_RE.match(s, pos=pos+1).end()
-                m = _regex(self.NODETYPE_RE, s, pos, 'a node type')
-                pos, nodetype = m.end(0), m.group(1)
+                m = _regex(self.NODETYPE_RE, s, pos, 'node type')
+                pos, nodetype = m.end(0), m[1]
+
+            elif var_is_current:
+                m = _regex(self.NODETYPE_RE, s, pos, 'node type')
+                pos, nodetype = m.end(0), m[1]
+                var_is_current = False
 
             # relation
             elif s[pos] == ':':
-                m = _regex(self.RELATION_RE, s, pos, 'a relation')
-                pos, rel = m.end(0), m.group(1)
+                m = _regex(self.RELATION_RE, s, pos, 'relation')
+                pos, rel = m.end(0), m[1]
 
                 # node value
-                if s[pos] == '(':
+                if self.NODE_ENTER_POS_RE.match(s, pos=pos):
                     span, data = self._decode_penman_node(s, pos=pos)
                     pos = span[1]
                     subtop, subnodes, subedges = data
@@ -421,11 +436,11 @@ class PENMANCodec(object):
                 # string or other atom value
                 else:
                     if s[pos] == '"':
-                        m = _regex(self.STRING_RE, s, pos, 'a quoted string')
-                        pos, value = m.end(0), m.group(1)
+                        m = _regex(self.STRING_RE, s, pos, 'quoted string')
+                        pos, value = m.end(0), m[1]
                     else:
-                        m = _regex(self.ATOM_RE, s, pos, 'a float/int/symbol')
-                        pos, value = m.end(0), m.group(1)
+                        m = _regex(self.ATOM_RE, s, pos, 'float/int/symbol')
+                        pos, value = m.end(0), m[1]
                     edges.append((var, rel, value))
 
             elif s[pos].isspace():
@@ -435,7 +450,7 @@ class PENMANCodec(object):
             else:
                 raise DecodeError('Expected ":" or "/"', string=s, pos=pos)
 
-        m = _regex(self.NODE_EXIT_RE, s, pos, '")"')
+        m = _regex(self.NODE_EXIT_RE, s, pos, 'node exit')
         pos = m.end(1)
 
         nodes = [(var, self.TYPE_REL, nodetype)] + nodes
@@ -560,7 +575,6 @@ class PENMANCodec(object):
         return ' ^\n'.join(
             map('{0[1]}({0[0]}, {0[2]})'.format, top_triple + g.triples())
         )
-
 
 class AMRCodecLite(PENMANCodec):
     """
@@ -804,12 +818,73 @@ class Graph(object):
         return dict((v, cnt - 1) for v, cnt in entrancies.items() if cnt >= 2)
 
 
-def _regex(x, s, pos, msg):
-    m = x.match(s, pos=pos)
-    if m is None:
-        raise DecodeError('Expected {}'.format(msg), string=s, pos=pos)
-    return m
+class TriplePattern(namedtuple('Triple', ('source', 'relation', 'target'))):
+    """Container for Graph edges and node attributes."""
+    def __new__(cls, source, relation, target, inverted=None):
+        t = super(TriplePattern, cls).__new__(
+            cls, source, relation, target
+        )
+        t.inverted = inverted
+        return t
 
+class BareCodec(PENMANCodec):
+    NODE_ENTER_RE = re.compile(r'((?<=(\s|^))(?=[a-z]))')
+    NODE_ENTER_POS_RE = NODE_ENTER_RE
+    NODE_ENTER_SYM = ' '
+    VAR_RE = re.compile(r'((?<=(^|\s))(?=[a-z]))')
+    NODE_EXIT_RE = re.compile(r'((?<=(\s|^)[a-z0-9-]+)(?=(\s|$)))')
+
+    RELATION_RE = re.compile(r'(:[^\s(),]*)\s*')
+
+    def handle_triple(self, lhs, relation, rhs):
+        """
+        Process triples before they are added to the graph.
+
+        Note that *lhs* and *rhs* are as they originally appeared, and
+        may be inverted. Inversions are detected by
+        is_relation_inverted() and de-inverted by invert_relation().
+
+        By default, this function:
+         * removes initial colons on relations
+         * de-inverts all inverted relations
+         * sets empty relations to `None`
+         * casts numeric string sources and targets to their numeric
+           types (e.g. float, int)
+
+        Args:
+            lhs: the left hand side of an observed triple
+            relation: the triple relation (possibly inverted)
+            rhs: the right hand side of an observed triple
+        Returns:
+            The processed (source, relation, target) triple. By default,
+            it is returned as a Triple object.
+        """
+        relation = relation.replace(':', '', 1)  # remove leading :
+
+        if self.is_relation_inverted(relation):  # deinvert
+            source, target, inverted = rhs, lhs, True
+            relation = self.invert_relation(relation)
+        else:
+            source, target, inverted = lhs, rhs, False
+
+        source = _default_cast(source)
+        target = _default_cast(target)
+
+        if relation == '':  # set empty relations to None
+            relation = None
+
+        return Triple(source, relation, target, inverted)
+
+
+def _regex(x, s, pos, el):
+    verbose = False
+    m = x.match(s, pos=pos)
+    if verbose:
+        print(f"x: {x.pattern:45} s: {s:40} pos: {pos:<3} msg: {el:30} m: {m}")
+    if m is None:
+        breakpoint()
+        raise DecodeError('Expected {}'.format(el), string=s, pos=pos)
+    return m
 
 def _default_cast(x):
     if isinstance(x, basestring):
