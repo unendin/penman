@@ -882,7 +882,6 @@ def _regex(x, s, pos, el):
     if verbose:
         print(f"x: {x.pattern:45} s: {s:40} pos: {pos:<3} msg: {el:30} m: {m}")
     if m is None:
-        breakpoint()
         raise DecodeError('Expected {}'.format(el), string=s, pos=pos)
     return m
 
